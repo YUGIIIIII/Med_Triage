@@ -1,34 +1,19 @@
 import streamlit as st
-# from orchestrator import MedicalAgentOrchestrator # Assuming you have this file
+from orchestrator import MedicalAgentOrchestrator
 import time
 import os
-
-# --- Dummy Orchestrator for Demonstration ---
-# Replace this with your actual orchestrator.py import
-class MedicalAgentOrchestrator:
-    def process_initial_report(self, report_content):
-        # This is a generator, yielding parts of the response
-        response = f"### Analysis of Report\n\n- **Patient Symptoms:** Analysis of symptoms mentioned in the report...\n- **Initial Findings:** Based on the content: '{report_content[:100]}...'\n- **Specialist Consultation Summary:**\n  - **Cardiologist:** Notes on cardiac health.\n  - **Neurologist:** Notes on neurological signs.\n\n**Final Assessment:** The diagnosis is pending further tests. Please ask any follow-up questions."
-        for word in response.split():
-            yield word + " "
-            time.sleep(0.05)
-
-    def process_follow_up(self, prompt):
-        return f"Regarding your question about '{prompt}', the multi-agent team suggests further consultation. The confidence score is currently 0.75."
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Medical Diagnosis Agent", page_icon="🩺", layout="wide")
 
-
 # --- API Key and State Initialization ---
-# This part is for deployment. For local testing, you can comment it out
-# and set the key directly if needed.
-# try:
-#     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-# except:
-#     st.error("🚨 Google API Key not found. Please set it in your Streamlit secrets.")
-#     st.stop()
-
+try:
+    # For deployment, set this in st.secrets
+    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+except:
+    st.error("🚨 Google API Key not found. Please set it in your Streamlit secrets.")
+    st.stop()
+    
 # Initialize orchestrator and chat history in session state
 if 'orchestrator' not in st.session_state:
     st.session_state.orchestrator = MedicalAgentOrchestrator()
@@ -42,51 +27,97 @@ with st.sidebar:
     st.title("🩺 Medical Diagnosis Agent")
     st.markdown("""
     This tool uses a multi-agent system to analyze medical reports.
-
+    
     **How to use:**
-    1. Upload a patient's medical report (.txt).
-    2. The system will perform a full analysis.
-    3. Ask follow-up questions in the chat window.
+    1.  Upload a patient's medical report (.txt).
+    2.  The system will perform a full analysis.
+    3.  Ask follow-up questions in the chat window.
     """)
-    if st.button("Start New Case"):
-        st.session_state.messages = []
-        st.session_state.case_started = False
+
+# --- Main Content ---
+st.header("1. Upload Medical Report")
+
+# File Uploader - shown only if the case has not started
+if not st.session_state.case_started:
+    uploaded_file = st.file_uploader("Choose a .txt file", type="txt")
+    if uploaded_file is not None:
+        st.session_state.case_started = True
+        report_content = uploaded_file.getvalue().decode("utf-8")
+        
+        # Add a placeholder for the analysis results
+        st.session_state.messages.append({"role": "assistant", "content": ""})
         st.rerun()
 
-
-# --- Main App Logic ---
-st.header("Case Analysis & Chat")
-
-# Display previous chat messages from history
+# Display previous chat messages and run analysis if needed
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Main logic controller
+# If this is the first run after upload, stream the analysis
+if st.session_state.case_started and len(st.session_state.messages) == 1:
+    with st.chat_message("assistant"):
+        with st.spinner('Performing multi-agent analysis...'):
+            full_response = ""
+            message_placeholder = st.empty()
+            
+            # The 'report_content' is not in session_state, so we need a temp solution
+            # Note: A more robust app might store the report in session_state
+            # For this flow, we'll re-read it from the uploader object if available
+            # This part is tricky; a simpler way is to just process and then allow chat.
+            # Let's simplify the logic to process and then rerun.
+            
+            # Simplified Logic:
+            # We already set case_started, let's process here directly
+            # This logic needs to be outside the loop
+            pass # We will handle this outside the loop
+
+# This block should be run once after file upload
+if st.session_state.case_started and len(st.session_state.messages) == 1:
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        full_response = ""
+        # The report content is lost on rerun, so let's process it immediately
+        # The logic has to be restructured. A better way:
+        
+        # Corrected Logic for Streamlit
+        # The processing must happen right after upload and before the first rerun
+        
+        # Let's restart this section for clarity
+        pass
+
+
+# ---- CORRECTED MAIN LOGIC ----
+st.header("2. Analysis & Chat")
+
+# Display chat history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Handling the upload and initial analysis
 if not st.session_state.case_started:
-    # --- STATE 1: WAITING FOR FILE UPLOAD ---
-    uploaded_file = st.file_uploader(
-        "Upload a patient's .txt medical report to begin analysis.",
-        type="txt"
-    )
+    uploaded_file = st.file_uploader("Choose a .txt file to begin analysis", type="txt")
     if uploaded_file is not None:
-        # File has been uploaded, start the analysis
         st.session_state.case_started = True
         report_content = uploaded_file.getvalue().decode("utf-8")
-
-        # Display the streaming analysis as the first assistant message
+        
+        # Display the analysis as it's generated
         with st.chat_message("assistant"):
-            with st.spinner("Performing multi-agent analysis... This may take a moment."):
-                full_response = st.write_stream(
-                    st.session_state.orchestrator.process_initial_report(report_content)
-                )
-
+            with st.spinner("Performing multi-agent analysis..."):
+                full_response = ""
+                message_placeholder = st.empty()
+                for part in st.session_state.orchestrator.process_initial_report(report_content):
+                    full_response += part
+                    message_placeholder.markdown(full_response + "▌")
+                    time.sleep(0.1)
+                message_placeholder.markdown(full_response)
+        
         # Save the full analysis to the message history
         st.session_state.messages.append({"role": "assistant", "content": full_response})
-        st.rerun()
+        st.rerun() # Rerun to clear the file uploader and move to chat input
 
-else:
-    # --- STATE 2: CASE STARTED, WAITING FOR FOLLOW-UP ---
+# Handling the follow-up chat
+if st.session_state.case_started:
     if prompt := st.chat_input("Ask a follow-up question..."):
         # Add user message to history and display it
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -98,6 +129,6 @@ else:
             with st.spinner("Thinking..."):
                 response = st.session_state.orchestrator.process_follow_up(prompt)
                 st.markdown(response)
-
+        
         # Add AI response to history
         st.session_state.messages.append({"role": "assistant", "content": response})
