@@ -1,25 +1,33 @@
 import streamlit as st
-from orchestrator import MedicalAgentOrchestrator # Make sure this file exists
+# from orchestrator import MedicalAgentOrchestrator # Assuming you have this file
 import time
 import os
+
+# --- Dummy Orchestrator for Demonstration ---
+# Replace this with your actual orchestrator.py import
+class MedicalAgentOrchestrator:
+    def process_initial_report(self, report_content):
+        # This is a generator, yielding parts of the response
+        response = f"### Analysis of Report\n\n- **Patient Symptoms:** Analysis of symptoms mentioned in the report...\n- **Initial Findings:** Based on the content: '{report_content[:100]}...'\n- **Specialist Consultation Summary:**\n  - **Cardiologist:** Notes on cardiac health.\n  - **Neurologist:** Notes on neurological signs.\n\n**Final Assessment:** The diagnosis is pending further tests. Please ask any follow-up questions."
+        for word in response.split():
+            yield word + " "
+            time.sleep(0.05)
+
+    def process_follow_up(self, prompt):
+        return f"Regarding your question about '{prompt}', the multi-agent team suggests further consultation. The confidence score is currently 0.75."
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Medical Diagnosis Agent", page_icon="🩺", layout="wide")
 
-# --- API Key and State Initialization ---
-# For deployment, set your API key in Streamlit's secrets management
-# e.g., GOOGLE_API_KEY = "your_key_here"
-try:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-except:
-    # This is a fallback for local development, not recommended for production
-    st.warning("🚨 GOOGLE_API_KEY not found in Streamlit secrets. Please add it for deployed apps.", icon="⚠️")
-    # You might want to add a text input for the key for local testing:
-    # api_key = st.text_input("Enter your Google API Key:", type="password")
-    # if not api_key:
-    #     st.stop()
-    # os.environ["GOOGLE_API_KEY"] = api_key
 
+# --- API Key and State Initialization ---
+# This part is for deployment. For local testing, you can comment it out
+# and set the key directly if needed.
+# try:
+#     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+# except:
+#     st.error("🚨 Google API Key not found. Please set it in your Streamlit secrets.")
+#     st.stop()
 
 # Initialize orchestrator and chat history in session state
 if 'orchestrator' not in st.session_state:
@@ -34,60 +42,51 @@ with st.sidebar:
     st.title("🩺 Medical Diagnosis Agent")
     st.markdown("""
     This tool uses a multi-agent system to analyze medical reports.
-    
+
     **How to use:**
-    1.  Upload a patient's medical report (.txt).
-    2.  The system will perform a full analysis.
-    3.  Ask follow-up questions in the chat window.
+    1. Upload a patient's medical report (.txt).
+    2. The system will perform a full analysis.
+    3. Ask follow-up questions in the chat window.
     """)
-    st.divider()
     if st.button("Start New Case"):
-        # Reset the session state to start over
         st.session_state.messages = []
         st.session_state.case_started = False
         st.rerun()
 
 
-# --- Main Content ---
-st.title("Medical Analysis & Chat")
+# --- Main App Logic ---
+st.header("Case Analysis & Chat")
 
-# 1. Show the file uploader if the case has not started
+# Display previous chat messages from history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Main logic controller
 if not st.session_state.case_started:
+    # --- STATE 1: WAITING FOR FILE UPLOAD ---
     uploaded_file = st.file_uploader(
-        "Upload a .txt medical report to begin the analysis",
-        type="txt",
-        label_visibility="collapsed"
+        "Upload a patient's .txt medical report to begin analysis.",
+        type="txt"
     )
     if uploaded_file is not None:
-        # Once a file is uploaded, start the analysis
+        # File has been uploaded, start the analysis
         st.session_state.case_started = True
         report_content = uploaded_file.getvalue().decode("utf-8")
-        
-        # Display the analysis as it's generated
+
+        # Display the streaming analysis as the first assistant message
         with st.chat_message("assistant"):
             with st.spinner("Performing multi-agent analysis... This may take a moment."):
-                full_response = ""
-                message_placeholder = st.empty()
-                # Assuming your orchestrator has a method that yields parts of the response
-                for part in st.session_state.orchestrator.process_initial_report(report_content):
-                    full_response += part
-                    message_placeholder.markdown(full_response + "▌")
-                    # A small sleep helps the streaming effect look smoother
-                    time.sleep(0.05)
-                message_placeholder.markdown(full_response)
-        
-        # Save the full analysis to the message history and rerun
+                full_response = st.write_stream(
+                    st.session_state.orchestrator.process_initial_report(report_content)
+                )
+
+        # Save the full analysis to the message history
         st.session_state.messages.append({"role": "assistant", "content": full_response})
         st.rerun()
 
-# 2. Display the chat interface if the case has started
 else:
-    # Display previous chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Handle the follow-up chat input
+    # --- STATE 2: CASE STARTED, WAITING FOR FOLLOW-UP ---
     if prompt := st.chat_input("Ask a follow-up question..."):
         # Add user message to history and display it
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -99,7 +98,6 @@ else:
             with st.spinner("Thinking..."):
                 response = st.session_state.orchestrator.process_follow_up(prompt)
                 st.markdown(response)
-        
+
         # Add AI response to history
         st.session_state.messages.append({"role": "assistant", "content": response})
-        st.rerun()
