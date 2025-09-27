@@ -37,7 +37,7 @@ with st.sidebar:
     """)
 
 # ---- MAIN LOGIC ----
-st.header("Upload Medical Report & Analysis")
+st.header("Upload Medical Report & Chat")
 
 # Display chat history
 for message in st.session_state.messages:
