@@ -1,84 +1,69 @@
-# File: app.py
-
 import streamlit as st
-from orchestrator import MedicalAgentOrchestrator
-import time
-import os
+from orchestrator import Orchestrator
 
-# --- Page Configuration ---
-st.set_page_config(page_title="Medical Diagnosis Agent", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="Med Triage", page_icon="🩺", layout="wide")
 
-# --- API Key and State Initialization ---
-try:
-    # For deployment, set this in st.secrets
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-except:
-    st.error("🚨 Google API Key not found. Please set it in your Streamlit secrets.")
-    st.stop()
-    
-# Initialize orchestrator and chat history in session state
-if 'orchestrator' not in st.session_state:
-    st.session_state.orchestrator = MedicalAgentOrchestrator()
-if 'messages' not in st.session_state:
+# --- Initialize session state ---
+if "orchestrator" not in st.session_state:
+    st.session_state.orchestrator = Orchestrator()
+
+if "messages" not in st.session_state:
     st.session_state.messages = []
-if 'case_started' not in st.session_state:
+
+if "case_started" not in st.session_state:
     st.session_state.case_started = False
+
+if "report_content" not in st.session_state:
+    st.session_state.report_content = None
+
 
 # --- Sidebar ---
 with st.sidebar:
-    st.title("🩺 Medical Diagnosis Agent")
-    st.markdown("""
-    This tool uses a multi-agent system to analyze medical reports.
-    
-    **How to use:**
-    1.  Upload a patient's medical report (`.txt`).
-    2.  The system will perform a full analysis.
-    3.  Ask follow-up questions in the chat window.
-    """)
+    st.header("🩺 Med Triage")
+    st.write("Upload a medical report to begin the triage process.")
 
-# ---- MAIN LOGIC ----
-st.header("Upload Medical Report & Chat")
+    if st.button("🔄 Reset Case"):
+        st.session_state.messages = []
+        st.session_state.case_started = False
+        st.session_state.report_content = None
+        st.experimental_rerun()
 
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
 
-# Handling the upload and initial analysis
+# --- Main Area ---
+st.title("Medical Report Triage Assistant")
+
 if not st.session_state.case_started:
-    uploaded_file = st.file_uploader("Choose a .txt file", type="txt")
+    # First step: upload the report
+    uploaded_file = st.file_uploader("Upload initial medical report", type=["txt"])
+
     if uploaded_file is not None:
+        # Save case state and file content
         st.session_state.case_started = True
-        report_content = uploaded_file.getvalue().decode("utf-8")
-        
-        # Display the analysis as it's generated
-        with st.chat_message("assistant"):
-            with st.spinner("Performing multi-agent analysis..."):
-                full_response = ""
-                message_placeholder = st.empty()
-                for part in st.session_state.orchestrator.process_initial_report(report_content):
-                    full_response += part
-                    message_placeholder.markdown(full_response + "▌")
-                    time.sleep(0.1)
-                message_placeholder.markdown(full_response)
-        
-        # Save the full analysis to the message history
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
-        st.rerun()  # Rerun to clear uploader and enable chat
+        st.session_state.report_content = uploaded_file.getvalue().decode("utf-8")
 
-# Handling the follow-up chat
-if st.session_state.case_started:
-    if prompt := st.chat_input("Ask a follow-up question..."):
-        # Add user message to history and display it
+        # Process the initial report once
+        with st.spinner("Analyzing initial report..."):
+            for part in st.session_state.orchestrator.process_initial_report(
+                st.session_state.report_content
+            ):
+                st.session_state.messages.append({"role": "assistant", "content": part})
+
+        st.success("Initial report processed. Chat is ready!")
+
+else:
+    # --- Chat Interface ---
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask a question about the patient..."):
+        # Show user message
+        st.chat_message("user").markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
 
-        # Get and display AI response
+        # Get response from orchestrator
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response = st.session_state.orchestrator.process_follow_up(prompt)
+                response = st.session_state.orchestrator.handle_user_message(prompt)
                 st.markdown(response)
-        
-        # Add AI response to history
         st.session_state.messages.append({"role": "assistant", "content": response})
