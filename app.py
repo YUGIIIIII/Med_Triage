@@ -36,60 +36,8 @@ with st.sidebar:
     3.  Ask follow-up questions in the chat window.
     """)
 
-# --- Main Content ---
-st.header("1. Upload Medical Report")
-
-# File Uploader - shown only if the case has not started
-if not st.session_state.case_started:
-    uploaded_file = st.file_uploader("Choose a .txt file", type="txt")
-    if uploaded_file is not None:
-        st.session_state.case_started = True
-        report_content = uploaded_file.getvalue().decode("utf-8")
-        
-        # Add a placeholder for the analysis results
-        st.session_state.messages.append({"role": "assistant", "content": ""})
-        st.rerun()
-
-# Display previous chat messages and run analysis if needed
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# If this is the first run after upload, stream the analysis
-if st.session_state.case_started and len(st.session_state.messages) == 1:
-    with st.chat_message("assistant"):
-        with st.spinner('Performing multi-agent analysis...'):
-            full_response = ""
-            message_placeholder = st.empty()
-            
-            # The 'report_content' is not in session_state, so we need a temp solution
-            # Note: A more robust app might store the report in session_state
-            # For this flow, we'll re-read it from the uploader object if available
-            # This part is tricky; a simpler way is to just process and then allow chat.
-            # Let's simplify the logic to process and then rerun.
-            
-            # Simplified Logic:
-            # We already set case_started, let's process here directly
-            # This logic needs to be outside the loop
-            pass # We will handle this outside the loop
-
-# This block should be run once after file upload
-if st.session_state.case_started and len(st.session_state.messages) == 1:
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        full_response = ""
-        # The report content is lost on rerun, so let's process it immediately
-        # The logic has to be restructured. A better way:
-        
-        # Corrected Logic for Streamlit
-        # The processing must happen right after upload and before the first rerun
-        
-        # Let's restart this section for clarity
-        pass
-
-
-# ---- CORRECTED MAIN LOGIC ----
-st.header("2. Analysis & Chat")
+# ---- MAIN LOGIC ----
+st.header("Upload Medical Report & Analysis")
 
 # Display chat history
 for message in st.session_state.messages:
@@ -98,7 +46,7 @@ for message in st.session_state.messages:
 
 # Handling the upload and initial analysis
 if not st.session_state.case_started:
-    uploaded_file = st.file_uploader("Choose a .txt file to begin analysis", type="txt")
+    uploaded_file = st.file_uploader("Choose a .txt file", type="txt")
     if uploaded_file is not None:
         st.session_state.case_started = True
         report_content = uploaded_file.getvalue().decode("utf-8")
@@ -116,7 +64,7 @@ if not st.session_state.case_started:
         
         # Save the full analysis to the message history
         st.session_state.messages.append({"role": "assistant", "content": full_response})
-        st.rerun() # Rerun to clear the file uploader and move to chat input
+        st.rerun()  # Rerun to clear uploader and enable chat
 
 # Handling the follow-up chat
 if st.session_state.case_started:
