@@ -262,7 +262,8 @@ if "analysis_complete" not in st.session_state:
 def initialize_orchestrator(api_key):
     try:
         os.environ["GOOGLE_API_KEY"] = api_key
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.2)
+        # --- THIS LINE HAS BEEN CHANGED ---
+        llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.2)
         return MedicalAgentOrchestrator(llm=llm)
     except Exception as e:
         st.error(f"Failed to initialize the language model. Please check your API key. Error: {e}")
