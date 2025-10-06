@@ -45,7 +45,7 @@ MedAgent is an intelligent multi-agent system that simulates a medical diagnosti
 **1. Clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/medagent.git
+git clone https://github.com/YUGIIIIII/medagent.git
 cd medagent
 ```
 
