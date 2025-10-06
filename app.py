@@ -40,10 +40,11 @@ def initialize_orchestrator(api_key):
         os.environ["GOOGLE_API_KEY"] = api_key
         
         # Try models in order of preference
+        # Try models in order of preference
         preferred_models = [
-            "gemini-1.5-flash",    # Fastest and most cost-effective
-            "gemini-1.5-pro",      # Most capable for complex tasks
-            "gemini-1.0-pro"       # Stable fallback option
+            "models/gemini-1.5-pro-001",  # <-- UPDATE THIS WITH YOUR MODEL NAME
+            "gemini-1.5-flash",          # You can leave the others as fallbacks
+            "gemini-1.0-pro"
         ]
         
         last_error = None
@@ -521,3 +522,4 @@ if st.session_state.analysis_complete:
                 response = st.session_state.orchestrator.process_follow_up(prompt)
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
+
