@@ -23,7 +23,7 @@ def validate_google_api_key(api_key):
         genai.configure(api_key=api_key)
         models = list(genai.list_models())
         generation_models = [
-            m.name for m in models 
+            m.name for m in models
             if 'generateContent' in getattr(m, 'supported_generation_methods', [])
         ]
         
@@ -42,8 +42,8 @@ def initialize_orchestrator(api_key):
         # Try models in order of preference
         preferred_models = [
             "gemini-1.5-flash",    # Fastest and most cost-effective
-            "gemini-1.5-pro",     # Most capable for complex tasks
-            "gemini-1.0-pro"      # Stable fallback option
+            "gemini-1.5-pro",      # Most capable for complex tasks
+            "gemini-1.0-pro"       # Stable fallback option
         ]
         
         last_error = None
@@ -117,14 +117,12 @@ class MedicalAgentOrchestrator:
 
     def _create_prompt_template(self, role_prompt):
         """Create prompt template with corrected string formatting."""
-        # CRITICAL FIX: Don't use f-string for template variables
-        # The {history} and {input} must remain as template placeholders
         template = role_prompt.strip() + """
 
 Current Conversation:
 {history}
 
-H: {input}
+Human: {input}
 AI:"""
         return PromptTemplate(input_variables=["history", "input"], template=template)
 
@@ -138,16 +136,16 @@ AI:"""
                 - If it IS a general condition, provide a brief diagnosis and recommendation.
                 - If it requires a specialist, determine which specialists are needed from the available list: Cardiologist, Psychologist, Pulmonologist, Neurologist.
                 You MUST return a JSON object with two keys: "referral" and "diagnosis".
-                - For specialist referral: {"referral": ["Cardiologist", "Psychologist"], "diagnosis": null}
-                - For direct diagnosis: {"referral": [], "diagnosis": "The patient appears to have a common cold. Recommend rest and hydration."}
+                - For specialist referral: {{"referral": ["Cardiologist", "Psychologist"], "diagnosis": null}}
+                - For direct diagnosis: {{"referral": [], "diagnosis": "The patient appears to have a common cold. Recommend rest and hydration."}}
                 Return *only* the JSON object.
 
                 Your second task is to review the specialist reports and check for consistency.
                 - If the reports are consistent, you should confirm this.
                 - If there are inconsistencies, you must clearly state the conflict.
                 You MUST return a JSON object with a single key: "conflict".
-                - If there is a conflict: {"conflict": "The Cardiologist suggests the issue is stress-related, while the Pulmonologist points to a possible respiratory infection. This is a conflict."}
-                - If there is no conflict: {"conflict": null}
+                - If there is a conflict: {{"conflict": "The Cardiologist suggests the issue is stress-related, while the Pulmonologist points to a possible respiratory infection. This is a conflict."}}
+                - If there is no conflict: {{"conflict": null}}
                 Return *only* the JSON object.
             """,
             "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health. State your possible causes and recommended next steps.",
@@ -408,7 +406,7 @@ with st.sidebar:
                 try:
                     genai.configure(api_key=google_api_key)
                     models = [m.name for m in genai.list_models() 
-                             if 'generateContent' in getattr(m, 'supported_generation_methods', [])]
+                              if 'generateContent' in getattr(m, 'supported_generation_methods', [])]
                     st.write("**Available models:**")
                     for model in models:
                         st.write(f"- {model}")
