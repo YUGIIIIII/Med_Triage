@@ -41,9 +41,9 @@ def initialize_orchestrator(api_key):
         
         # Try models in order of preference
         preferred_models = [
-            "gemini-1.5-pro-001",  # Example - use the name you find from the debug list
-            "gemini-1.5-flash",    
-            "gemini-1.0-pro"      
+            "gemini-pro-latest",  # Example - use the name you find from the debug list
+            "gemini-2.5-flash",    
+            "gemini-2.0-pro"      
         ]
         
         last_error = None
@@ -382,3 +382,4 @@ if st.session_state.orchestrator:
                     st.session_state.messages.append({"role": "assistant", "content": response})
 else:
     st.warning("Please resolve API key/model issues in the sidebar to proceed.")
+
