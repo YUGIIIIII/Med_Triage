@@ -1,6 +1,8 @@
-streamlit 
+streamlit
+langchain
 langchain-google-genai
-chromadb
-langchain 
-sentence-transformers
 google-generativeai
+python-dotenv
+chromadb
+protobuf
+re
