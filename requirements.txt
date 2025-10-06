@@ -1,1 +1,6 @@
-streamlit langchain-google-genai chromadb langchain sentence-transformers google-generativeai
+streamlit 
+langchain-google-genai
+chromadb
+langchain 
+sentence-transformers
+google-generativeai
