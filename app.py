@@ -55,16 +55,16 @@ AI:"""
                 - If it IS a general condition, provide a brief diagnosis and recommendation.
                 - If it requires a specialist, determine which specialists are needed from the available list: Cardiologist, Psychologist, Pulmonologist, Neurologist.
                 You MUST return a JSON object with two keys: "referral" and "diagnosis".
-                - For specialist referral: {"referral": ["Cardiologist", "Psychologist"], "diagnosis": null}
-                - For direct diagnosis: {"referral": [], "diagnosis": "The patient appears to have a common cold. Recommend rest and hydration."}
+                - For specialist referral: {{"referral": ["Cardiologist", "Psychologist"], "diagnosis": null}}
+                - For direct diagnosis: {{"referral": [], "diagnosis": "The patient appears to have a common cold. Recommend rest and hydration."}}
                 Return *only* the JSON object.
 
                 Your second task is to review the specialist reports and check for consistency.
                 - If the reports are consistent, you should confirm this.
                 - If there are inconsistencies, you must clearly state the conflict.
                 You MUST return a JSON object with a single key: "conflict".
-                - If there is a conflict: {"conflict": "The Cardiologist suggests the issue is stress-related, while the Pulmonologist points to a possible respiratory infection. This is a conflict."}
-                - If there is no conflict: {"conflict": null}
+                - If there is a conflict: {{"conflict": "The Cardiologist suggests the issue is stress-related, while the Pulmonologist points to a possible respiratory infection. This is a conflict."}}
+                - If there is no conflict: {{"conflict": null}}
                 Return *only* the JSON object.
             """,
             "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health. State your possible causes and recommended next steps.",
@@ -105,7 +105,6 @@ AI:"""
             with open(log_filename, "w") as f:
                 f.write(self.main_conversation_history)
             
-            # Add final conversation to ChromaDB
             self.collection.add(documents=[self.main_conversation_history], ids=[str(self.run_id)])
             return f"✅ Diagnosis log saved to: `{log_filename}`"
         except Exception as e:
@@ -116,7 +115,6 @@ AI:"""
             results = self.collection.query(query_texts=[query], n_results=3)
             return results["documents"][0] if results["documents"] else []
         except Exception as e:
-            # Handle cases where the collection might be empty or other DB errors
             st.error(f"Could not retrieve similar cases from Vector DB: {e}")
             return []
 
@@ -125,9 +123,8 @@ AI:"""
         self.case_started = True
         self.report_filename = report_filename
         self.run_id = uuid.uuid4()
-        self.main_conversation_history = "" # Reset for each new report
+        self.main_conversation_history = ""
 
-        # Step 0: Retrieve Similar Cases
         yield "### Step 0: Retrieving Similar Cases\n---\n"
         similar_cases = self._get_similar_cases(medical_report)
         if similar_cases:
@@ -139,7 +136,6 @@ AI:"""
             yield "No similar past cases found.\n"
         self._log_event("similar_cases_retrieved", {"cases": similar_cases})
 
-        # Step 1: GP Triage
         yield "\n### Step 1: General Physician Triage\n---\n"
         self.main_conversation_history += f"Initial Medical Report:\n\n{medical_report}\n"
         gp_chain = self.agents["GeneralPhysician"]
@@ -156,12 +152,10 @@ AI:"""
             self._log_event("error", {"message": "Fatal: Could not decode GP JSON response."})
             return
 
-        # Step 2: Specialist Consultation (or Final GP Diagnosis)
         if gp_decision.get("referral") and len(gp_decision["referral"]) > 0:
             referred_specialists = gp_decision["referral"]
             yield f"\n### Step 2: Specialist Consultations for `{referred_specialists}`\n---\n"
             
-            # This runs the full specialist -> consistency -> conflict -> MDT flow
             for update in self._run_specialist_flow(referred_specialists):
                 yield update
         else:
@@ -190,7 +184,6 @@ AI:"""
                 yield f"⚠️ Warning: Specialist '{specialist_name}' not found.\n"
                 self._log_event("error", {"message": f"Specialist agent '{specialist_name}' not found."})
 
-        # Step 3: GP Consistency Check
         yield "\n### Step 3: GP Consistency Check\n---\n"
         gp_chain = self.agents["GeneralPhysician"]
         consistency_check_input = self.main_conversation_history + "\n\nPlease review the specialist reports above for consistency."
@@ -204,9 +197,8 @@ AI:"""
             gp_consistency_decision = json.loads(cleaned_str)
         except (json.JSONDecodeError, TypeError):
             yield "⚠️ Could not decode GP consistency check. Bypassing conflict resolution and proceeding to MDT assessment."
-            gp_consistency_decision = {"conflict": None} # Assume no conflict if JSON fails
+            gp_consistency_decision = {"conflict": None}
 
-        # Step 4 & 5: Conflict Resolution and MDT Assessment
         if gp_consistency_decision.get("conflict"):
             yield f"\n### Step 4: Conflict Resolution\n---\n"
             yield f"Conflict identified: {gp_consistency_decision.get('conflict')}"
@@ -235,7 +227,7 @@ AI:"""
         self.main_conversation_history += f"\n--- Follow-up Answer ---\n{response}\n"
         
         log_status = self._save_conversation_log()
-        st.info(log_status) # Show log status for follow-ups as well
+        st.info(log_status)
         return response
 
 # --- STREAMLIT UI ---
@@ -249,7 +241,6 @@ A General Physician agent performs initial triage, referring to specialist agent
 The system includes consistency checks and conflict resolution before a final assessment by a Multidisciplinary Team agent.
 """)
 
-# --- Sidebar for API Key and Configuration ---
 with st.sidebar:
     st.header("Configuration")
     google_api_key = st.text_input("Enter your Google API Key", type="password")
@@ -261,9 +252,6 @@ with st.sidebar:
     Always seek the guidance of a licensed physician for any medical concerns.
     """)
 
-# --- Main App Logic ---
-
-# Initialize session state
 if "orchestrator" not in st.session_state:
     st.session_state.orchestrator = None
 if "messages" not in st.session_state:
@@ -271,7 +259,6 @@ if "messages" not in st.session_state:
 if "analysis_complete" not in st.session_state:
     st.session_state.analysis_complete = False
 
-# Function to initialize the orchestrator
 def initialize_orchestrator(api_key):
     try:
         os.environ["GOOGLE_API_KEY"] = api_key
@@ -281,7 +268,6 @@ def initialize_orchestrator(api_key):
         st.error(f"Failed to initialize the language model. Please check your API key. Error: {e}")
         return None
 
-# Check for API key and initialize orchestrator
 if google_api_key:
     if st.session_state.orchestrator is None:
         with st.spinner("Initializing agents..."):
@@ -291,10 +277,8 @@ else:
     st.stop()
 
 if st.session_state.orchestrator:
-    # --- Report Submission Section ---
     st.header("1. Submit Medical Report")
     
-    # Example report for user convenience
     example_report = """**Patient:** Michael Johnson, 35-year-old male, Software Engineer.
 **Symptoms:** Recurrent episodes of intense fear, heart palpitations, shortness of breath, chest tightness, dizziness, and trembling. Episodes last 10-15 minutes.
 **History:** Two emergency room visits in the past six months; all cardiac workups were negative. Patient is worried he is having a heart attack."""
@@ -305,19 +289,17 @@ if st.session_state.orchestrator:
         if not medical_report.strip():
             st.error("Please paste a medical report to analyze.")
         else:
-            st.session_state.messages = [] # Clear previous messages
+            st.session_state.messages = []
             st.session_state.analysis_complete = False
             with st.status("Running full diagnostic workflow...", expanded=True) as status:
                 st.session_state.messages.append({"role": "user", "content": medical_report})
                 
-                # Use st.write_stream for real-time output
                 full_response = st.write_stream(st.session_state.orchestrator.process_report(medical_report))
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 status.update(label="Analysis Complete!", state="complete")
             st.session_state.analysis_complete = True
-            st.rerun() # Rerun to show the follow-up input box
+            st.rerun()
 
-    # --- Display conversation ---
     if st.session_state.messages:
         st.header("Diagnostic Process Log")
         for message in st.session_state.messages:
@@ -329,7 +311,6 @@ if st.session_state.orchestrator:
                 with st.chat_message("assistant", avatar="🤖"):
                     st.markdown(message["content"])
 
-    # --- Follow-up Question Section ---
     if st.session_state.analysis_complete:
         st.header("2. Ask Follow-up Questions")
         
