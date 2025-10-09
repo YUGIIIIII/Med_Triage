@@ -20,11 +20,9 @@ def initialize_orchestrator(api_key):
     """Initializes the orchestrator with the specified model."""
     try:
         os.environ["GOOGLE_API_KEY"] = api_key
-        # Using gemini-2.5-flash as requested
         model_name = "gemini-2.5-flash"
         
         llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2, max_retries=3)
-        # Perform a quick test to ensure the model is accessible
         llm.invoke("Connection test")
         
         st.success(f"✅ Successfully connected using model: {model_name}")
@@ -73,11 +71,11 @@ class MedicalAgentOrchestrator:
     def _create_agents(self):
         agents = {}
         prompts = {
-            "GeneralPhysician": """Act as an expert General Physician. Your task is to triage a patient. You MUST return a JSON object with two keys: "referral" (a list of specialist names or an empty list) and "diagnosis" (a string with your findings, or null if referring).
-Example of a referral output:
-```json
-{"referral": ["Cardiologist"], "diagnosis": null}
-```""",
+            "GeneralPhysician": """Act as an expert General Physician. Your only task is to triage a patient based on the conversation history.
+You MUST respond with ONLY a valid JSON object and nothing else.
+The JSON object must have two keys:
+1. "referral": a list of specialist names (e.g., ["Cardiologist", "Neurologist"]) or an empty list [].
+2. "diagnosis": a string containing your initial findings, or null if you are referring the patient.""",
             "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health.",
             "Psychologist": "Act as an expert Psychologist. Analyze the conversation and medical history, providing a psychological assessment.",
             "Pulmonologist": "Act as an expert Pulmonologist. Analyze the conversation and medical history, providing a pulmonary assessment.",
@@ -166,6 +164,9 @@ Example:
                 time.sleep(1)
                 self.main_conversation_history += f"\n--- {specialist_name} Report ---\n{specialist_response}\n"
                 yield f"*Report from {specialist_name}:*\n\n{specialist_response}\n"
+        
+        # This part of the logic may no longer trigger as the GP isn't explicitly asked for conflicts.
+        # However, we leave it in case the GP identifies one anyway.
         yield "\n### Step 3: GP Consistency Check\n---\n"
         gp_consistency_response_str = self.agents["GeneralPhysician"].predict(input=self.main_conversation_history)
         time.sleep(1)
@@ -178,6 +179,7 @@ Example:
             time.sleep(1)
             self.main_conversation_history += f"\n--- Conflict Resolution ---\n{resolution_response_str}\n"
             yield f"*Conflict Resolution Output:*\n{resolution_response_str}\n"
+        
         yield "\n### Step 5: Final Multidisciplinary Team Assessment\n---\n"
         mdt_response = self.agents["MultidisciplinaryTeam"].predict(input=self.main_conversation_history)
         time.sleep(1)
