@@ -14,23 +14,46 @@ from langchain.memory import ConversationBufferWindowMemory
 import chromadb
 from chromadb.utils import embedding_functions
 
-# --- UTILITY FUNCTION ---
+# --- UTILITY FUNCTIONS ---
+
+def validate_google_api_key(api_key):
+    """Validates Google API key and checks for available generation models."""
+    if not api_key:
+        return False, "API key cannot be empty."
+    try:
+        genai.configure(api_key=api_key)
+        models = list(genai.list_models())
+        generation_models = [
+            m.name for m in models
+            if 'generateContent' in getattr(m, 'supported_generation_methods', [])
+        ]
+        
+        if not generation_models:
+            return False, "No generation models found for this API key. Ensure Generative Language API is enabled."
+        
+        return True, f"API key valid. Found {len(generation_models)} generation models."
+    except Exception as e:
+        return False, f"API key validation failed: {e}. Check key format and permissions."
 
 def initialize_orchestrator(api_key):
-    """Initializes the orchestrator with the specified model."""
+    """Initialize the orchestrator with Gemini 2.5 Flash model."""
     try:
         os.environ["GOOGLE_API_KEY"] = api_key
+        
+        # Use Gemini 2.5 Flash model specifically
         model_name = "gemini-2.5-flash"
         
-        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2, max_retries=3)
-        llm.invoke("Connection test")
-        
-        st.success(f"✅ Successfully connected using model: {model_name}")
-        return MedicalAgentOrchestrator(llm=llm)
+        try:
+            llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2, max_retries=3)
+            llm.invoke("Connection test")
+            st.success(f"✅ Successfully connected using model: {model_name}")
+            return MedicalAgentOrchestrator(llm=llm)
+        except Exception as model_error:
+            st.error(f"Failed to initialize {model_name}: {model_error}")
+            raise Exception(f"Model initialization failed: {model_error}")
         
     except Exception as e:
-        st.error(f"❌ Failed to initialize language model '{model_name}': {e}")
-        st.error("Please ensure your API key in Streamlit Secrets is valid and has the Generative Language API enabled for this model.")
+        st.error(f"Failed to initialize language model: {e}")
         return None
 
 # --- CORE ORCHESTRATOR LOGIC ---
@@ -52,13 +75,13 @@ class MedicalAgentOrchestrator:
             self.collection = self.chroma_client.get_or_create_collection(
                 name="medical_diagnoses", embedding_function=self.embedding_function
             )
-        except Exception as e:
-            st.warning(f"Could not initialize vector database. Past case retrieval will be disabled. Error: {e}")
+        except Exception:
             self.chroma_client = None
             self.collection = None
 
         self.agents = self._create_agents()
         self.case_started = False
+        self.referred_specialists_for_retry = []
 
     def _setup_logging(self):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -71,20 +94,12 @@ class MedicalAgentOrchestrator:
     def _create_agents(self):
         agents = {}
         prompts = {
-            "GeneralPhysician": """Act as an expert General Physician. Your only task is to triage a patient based on the conversation history.
-You MUST respond with ONLY a valid JSON object and nothing else.
-The JSON object must have two keys:
-1. "referral": a list of specialist names (e.g., ["Cardiologist", "Neurologist"]) or an empty list [].
-2. "diagnosis": a string containing your initial findings, or null if you are referring the patient.""",
+            "GeneralPhysician": """Act as an expert General Physician. Your first task is to triage a patient. You MUST return a JSON object with two keys: "referral" (a list of specialist names or an empty list) and "diagnosis" (a string with your findings, or null if referring). Example: {{"referral": ["Cardiologist"], "diagnosis": null}}. Your second task is to check specialist reports for conflicts. You MUST return a JSON object with one key: "conflict" (a string describing the conflict, or null if none). Example: {{"conflict": "Cardiologist points to stress, Pulmonologist points to infection."}}.""",
             "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health.",
             "Psychologist": "Act as an expert Psychologist. Analyze the conversation and medical history, providing a psychological assessment.",
             "Pulmonologist": "Act as an expert Pulmonologist. Analyze the conversation and medical history, providing a pulmonary assessment.",
             "Neurologist": "Act as an expert Neurologist. Analyze the conversation and medical history, providing a neurological assessment.",
-            "ConflictResolver": """Act as an expert conflict resolver. You are given specialist reports that are conflicting. Your task is to analyze them and provide a reasoned resolution. You MUST return a JSON object with a single key: "resolution".
-Example:
-```json
-{"resolution": "The symptoms align more with stress-induced tachycardia, so the Psychologist's assessment should be prioritized."}
-```""",
+            "ConflictResolver": """Act as an expert conflict resolver. You are given specialist reports that are conflicting. Your task is to analyze them and provide a reasoned resolution. You MUST return a JSON object with a single key: "resolution". Example: {{"resolution": "The symptoms align more with stress-induced tachycardia, so the Psychologist's assessment should be prioritized."}}.""",
             "MultidisciplinaryTeam": "Act as a multidisciplinary team. Review the entire conversation history. Synthesize this information to provide a final list of the 3 most likely health issues, each with a concise justification. When asked a follow-up question, use the full conversation context to provide an accurate answer."
         }
         for role, prompt_text in prompts.items():
@@ -96,21 +111,30 @@ Example:
     def safe_json_parse(self, json_string):
         try:
             if json_string is None: return None
-            json_match = re.search(r'\{.*\}', str(json_string), re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(0))
-            return None
+            cleaned = str(json_string).strip()
+            if cleaned.startswith("```json"): cleaned = cleaned[7:]
+            if cleaned.endswith("```"): cleaned = cleaned[:-3]
+            json_match = re.search(r'\{[\s\S]*\}', cleaned.strip())
+            return json.loads(json_match.group(0)) if json_match else None
         except (json.JSONDecodeError, TypeError, AttributeError):
             return None
 
+    def _log_event(self, event_name, data):
+        try:
+            log_entry = {"timestamp": datetime.datetime.now().isoformat(), "event": event_name, "data": data}
+            base_filename = os.path.splitext(self.report_filename)[0]
+            log_filename = f"{self.json_log_dir}/{base_filename}_{self.run_id}.jsonl"
+            with open(log_filename, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception: pass
+
     def _save_conversation_log(self):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.report_filename = getattr(self, 'report_filename', 'log')
         base_filename = os.path.splitext(self.report_filename)[0]
         log_filename = f"{self.log_dir}/{base_filename}_{timestamp}.txt"
         try:
             with open(log_filename, "w") as f: f.write(self.main_conversation_history)
-            if self.collection is not None and hasattr(self, 'run_id'):
+            if self.collection is not None:
                 self.collection.upsert(documents=[self.main_conversation_history], ids=[str(self.run_id)])
             return f"✅ Diagnosis log saved to: {log_filename}"
         except Exception as e:
@@ -140,7 +164,7 @@ Example:
         self.main_conversation_history += f"Initial Medical Report:\n\n{medical_report}\n"
         gp_chain = self.agents["GeneralPhysician"]
         gp_response_str = gp_chain.predict(input=self.main_conversation_history)
-        time.sleep(1) 
+        time.sleep(1)
         self.main_conversation_history += f"\n--- General Physician Triage Notes ---\n{gp_response_str}\n"
         yield f"*GP Triage Output:*\n```json\n{gp_response_str}\n```\n\n"
         gp_decision = self.safe_json_parse(gp_response_str)
@@ -164,9 +188,6 @@ Example:
                 time.sleep(1)
                 self.main_conversation_history += f"\n--- {specialist_name} Report ---\n{specialist_response}\n"
                 yield f"*Report from {specialist_name}:*\n\n{specialist_response}\n"
-        
-        # This part of the logic may no longer trigger as the GP isn't explicitly asked for conflicts.
-        # However, we leave it in case the GP identifies one anyway.
         yield "\n### Step 3: GP Consistency Check\n---\n"
         gp_consistency_response_str = self.agents["GeneralPhysician"].predict(input=self.main_conversation_history)
         time.sleep(1)
@@ -179,7 +200,6 @@ Example:
             time.sleep(1)
             self.main_conversation_history += f"\n--- Conflict Resolution ---\n{resolution_response_str}\n"
             yield f"*Conflict Resolution Output:*\n{resolution_response_str}\n"
-        
         yield "\n### Step 5: Final Multidisciplinary Team Assessment\n---\n"
         mdt_response = self.agents["MultidisciplinaryTeam"].predict(input=self.main_conversation_history)
         time.sleep(1)
@@ -201,26 +221,30 @@ st.set_page_config(page_title="🩺 MedAgent Collaborative Diagnosis", layout="w
 st.title("🩺 MedAgent: A Collaborative AI Diagnostic System")
 st.markdown("This application uses a multi-agent AI system to analyze medical reports.")
 
-with st.sidebar:
-    st.header("⚠ Disclaimer")
-    st.warning("This software is for educational purposes only and is not a substitute for professional medical advice.")
-    st.markdown("---")
-    st.info("API Key is securely loaded from Streamlit Secrets.")
-
+# Get API key from Streamlit secrets
 try:
     google_api_key = st.secrets["GOOGLE_API_KEY"]
-except KeyError:
-    st.error("🔴 GOOGLE_API_KEY not found in Streamlit Secrets.")
-    st.info("Please create a .streamlit/secrets.toml file and add your key.")
+except Exception as e:
+    st.error("❌ Google API Key not found in Streamlit secrets. Please add GOOGLE_API_KEY to your secrets.toml file.")
     st.stop()
 
+# Validate API key
+is_key_valid, validation_message = validate_google_api_key(google_api_key)
+if not is_key_valid:
+    st.error(f"❌ {validation_message}")
+    st.stop()
+
+with st.sidebar:
+    st.markdown("---")
+    st.header("⚠ Disclaimer")
+    st.warning("This software is for educational purposes only and is not a substitute for professional medical advice.")
 
 if "orchestrator" not in st.session_state: st.session_state.orchestrator = None
 if "messages" not in st.session_state: st.session_state.messages = []
 if "analysis_complete" not in st.session_state: st.session_state.analysis_complete = False
 
-if google_api_key and st.session_state.orchestrator is None:
-    with st.spinner("Initializing agents... This may take a moment."):
+if st.session_state.orchestrator is None:
+    with st.spinner("Initializing agents with Gemini 2.5 Flash..."):
         st.session_state.orchestrator = initialize_orchestrator(google_api_key)
 
 if st.session_state.orchestrator:
@@ -232,7 +256,7 @@ if st.session_state.orchestrator:
 
     if st.button("Analyze Report", type="primary"):
         if medical_report.strip():
-            st.session_state.messages = [{"role": "user", "content": f"**Initial Report:**\n\n---\n\n{medical_report}"}]
+            st.session_state.messages = [{"role": "user", "content": medical_report}]
             st.session_state.analysis_complete = False
             with st.status("Running full diagnostic workflow...", expanded=True) as status:
                 full_response_content = "".join(st.session_state.orchestrator.process_report(medical_report))
@@ -251,12 +275,11 @@ if st.session_state.orchestrator:
         st.header("2. Ask Follow-up Questions")
         if prompt := st.chat_input("Ask a follow-up question..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"): 
-                st.markdown(prompt)
+            with st.chat_message("user"): st.markdown(prompt)
             with st.chat_message("assistant"):
                 with st.spinner("MDT is thinking..."):
                     response = st.session_state.orchestrator.process_follow_up(prompt)
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
 else:
-    st.warning("Could not initialize the diagnostic agents. Please check the error messages above.")
+    st.warning("Please resolve API key/model issues to proceed.")
