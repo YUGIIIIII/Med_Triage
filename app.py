@@ -1,10 +1,92 @@
-{"conflict": "Cardiologist points to stress, Pulmonologist points to infection."}
+import streamlit as st
+import os
+import json
+import datetime
+import uuid
+import re
+import time
+import google.generativeai as genai
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import ConversationChain
+from langchain.memory import ConversationBufferWindowMemory
+import chromadb
+from chromadb.utils import embedding_functions
+
+# --- UTILITY FUNCTION ---
+
+def initialize_orchestrator(api_key):
+    """Initializes the orchestrator with the specified model."""
+    try:
+        os.environ["GOOGLE_API_KEY"] = api_key
+        # Using gemini-2.5-flash as requested
+        model_name = "gemini-2.5-flash"
+        
+        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2, max_retries=3)
+        # Perform a quick test to ensure the model is accessible
+        llm.invoke("Connection test")
+        
+        st.success(f"✅ Successfully connected using model: {model_name}")
+        return MedicalAgentOrchestrator(llm=llm)
+        
+    except Exception as e:
+        st.error(f"❌ Failed to initialize language model '{model_name}': {e}")
+        st.error("Please ensure your API key in Streamlit Secrets is valid and has the Generative Language API enabled for this model.")
+        return None
+
+# --- CORE ORCHESTRATOR LOGIC ---
+
+class MedicalAgentOrchestrator:
+    """Manages the workflow of memory-enabled medical agents."""
+
+    def __init__(self, llm):
+        self.llm = llm
+        self.main_conversation_history = ""
+        self.log_dir = "diagnosis_logs"
+        self.json_log_dir = "diagnosis_logs_json"
+        self.vector_db_path = "vector_db"
+        self._setup_logging()
+        
+        try:
+            self.chroma_client = chromadb.PersistentClient(path=self.vector_db_path)
+            self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+            self.collection = self.chroma_client.get_or_create_collection(
+                name="medical_diagnoses", embedding_function=self.embedding_function
+            )
+        except Exception as e:
+            st.warning(f"Could not initialize vector database. Past case retrieval will be disabled. Error: {e}")
+            self.chroma_client = None
+            self.collection = None
+
+        self.agents = self._create_agents()
+        self.case_started = False
+
+    def _setup_logging(self):
+        os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.json_log_dir, exist_ok=True)
+
+    def _create_prompt_template(self, role_prompt):
+        template = role_prompt.strip() + "\n\nCurrent Conversation:\n{history}\n\nHuman: {input}\nAI:"
+        return PromptTemplate(input_variables=["history", "input"], template=template)
+
+    def _create_agents(self):
+        agents = {}
+        prompts = {
+            "GeneralPhysician": """Act as an expert General Physician. Your task is to triage a patient. You MUST return a JSON object with two keys: "referral" (a list of specialist names or an empty list) and "diagnosis" (a string with your findings, or null if referring).
+Example of a referral output:
+```json
+{"referral": ["Cardiologist"], "diagnosis": null}
 ```""",
             "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health.",
             "Psychologist": "Act as an expert Psychologist. Analyze the conversation and medical history, providing a psychological assessment.",
             "Pulmonologist": "Act as an expert Pulmonologist. Analyze the conversation and medical history, providing a pulmonary assessment.",
             "Neurologist": "Act as an expert Neurologist. Analyze the conversation and medical history, providing a neurological assessment.",
-            "ConflictResolver": """Act as an expert conflict resolver. You are given specialist reports that are conflicting. Your task is to analyze them and provide a reasoned resolution. You MUST return a JSON object with a single key: "resolution". Example: {"resolution": "The symptoms align more with stress-induced tachycardia, so the Psychologist's assessment should be prioritized."}.""",
+            "ConflictResolver": """Act as an expert conflict resolver. You are given specialist reports that are conflicting. Your task is to analyze them and provide a reasoned resolution. You MUST return a JSON object with a single key: "resolution".
+Example:
+```json
+{"resolution": "The symptoms align more with stress-induced tachycardia, so the Psychologist's assessment should be prioritized."}
+```""",
             "MultidisciplinaryTeam": "Act as a multidisciplinary team. Review the entire conversation history. Synthesize this information to provide a final list of the 3 most likely health issues, each with a concise justification. When asked a follow-up question, use the full conversation context to provide an accurate answer."
         }
         for role, prompt_text in prompts.items():
@@ -16,7 +98,6 @@
     def safe_json_parse(self, json_string):
         try:
             if json_string is None: return None
-            # Find the first '{' and the last '}' to extract the JSON object
             json_match = re.search(r'\{.*\}', str(json_string), re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(0))
@@ -24,22 +105,14 @@
         except (json.JSONDecodeError, TypeError, AttributeError):
             return None
 
-    def _log_event(self, event_name, data):
-        try:
-            log_entry = {"timestamp": datetime.datetime.now().isoformat(), "event": event_name, "data": data}
-            base_filename = os.path.splitext(self.report_filename)[0]
-            log_filename = f"{self.json_log_dir}/{base_filename}_{self.run_id}.jsonl"
-            with open(log_filename, "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        except Exception: pass
-
     def _save_conversation_log(self):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.report_filename = getattr(self, 'report_filename', 'log')
         base_filename = os.path.splitext(self.report_filename)[0]
         log_filename = f"{self.log_dir}/{base_filename}_{timestamp}.txt"
         try:
             with open(log_filename, "w") as f: f.write(self.main_conversation_history)
-            if self.collection is not None:
+            if self.collection is not None and hasattr(self, 'run_id'):
                 self.collection.upsert(documents=[self.main_conversation_history], ids=[str(self.run_id)])
             return f"✅ Diagnosis log saved to: {log_filename}"
         except Exception as e:
