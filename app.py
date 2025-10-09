@@ -141,9 +141,20 @@ class MedicalAgentOrchestrator:
             with open(log_filename, "w") as f: f.write(self.main_conversation_history)
             if self.collection is not None:
                 self.collection.upsert(documents=[self.main_conversation_history], ids=[str(self.run_id)])
+            self.last_log_filename = log_filename  # Store the filename
             return f"✅ Diagnosis log saved to: {log_filename}"
         except Exception as e:
             return f"❌ Error saving log file: {e}"
+    
+    def get_last_log_content(self):
+        """Get the content of the last saved log file."""
+        if hasattr(self, 'last_log_filename'):
+            try:
+                with open(self.last_log_filename, 'r') as f:
+                    return f.read()
+            except Exception as e:
+                return f"Error reading log file: {e}"
+        return "No log file available yet."
 
     def _get_similar_cases(self, query):
         if self.collection is None: return []
@@ -286,5 +297,23 @@ if st.session_state.orchestrator:
                     response = st.session_state.orchestrator.process_follow_up(prompt)
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Add section to view and download the diagnosis log
+        st.header("3. View & Download Diagnosis Log")
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("📄 View Full Diagnosis Log"):
+                log_content = st.session_state.orchestrator.get_last_log_content()
+                st.text_area("Complete Diagnosis Log", log_content, height=400)
+        
+        with col2:
+            log_content = st.session_state.orchestrator.get_last_log_content()
+            st.download_button(
+                label="⬇️ Download Diagnosis Log",
+                data=log_content,
+                file_name=f"diagnosis_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain"
+            )
 else:
     st.warning("Please resolve API key/model issues to proceed.")
