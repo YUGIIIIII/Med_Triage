@@ -21,7 +21,7 @@ def initialize_orchestrator(api_key):
     try:
         os.environ["GOOGLE_API_KEY"] = api_key
         # Using a robust, recent flash model as requested.
-        model_name = "gemini-1.5-flash-latest" 
+        model_name = "gemini-2.5-flash" 
         
         llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2, max_retries=3)
         # Perform a quick test to ensure the model is accessible
@@ -262,3 +262,4 @@ if st.session_state.orchestrator:
                     st.session_state.messages.append({"role": "assistant", "content": response})
 else:
     st.warning("Could not initialize the diagnostic agents. Please check the error messages above.")
+
