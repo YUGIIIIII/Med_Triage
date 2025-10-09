@@ -33,26 +33,25 @@ def safe_json_parse(text: Optional[str]) -> Optional[Dict[str, Any]]:
 # ---------------------------
 # Prompt templates
 # ---------------------------
-
 GP_PROMPT = """
 You are a General Physician triage agent.
 
 Patient information:
 {input}
 
-Task 1 (TRIAGE):
-Read the patient information and decide whether the case can be handled as a general primary-care issue or requires referral to one or more specialists.
-Return **STRICT JSON ONLY** with:
-- "referral": list of specialists ("Cardiologist", "Psychologist", "Pulmonologist", "Neurologist") OR []
-- "diagnosis": concise diagnosis string if general issue, else null
+Task:
+Decide if the patient can be handled by a GP or needs referral to specialists.
+Return STRICT JSON ONLY:
+- "referral": list of specialists ["Cardiologist", "Psychologist", "Pulmonologist", "Neurologist"] or []
+- "diagnosis": string if GP can handle, else null
 
-Example output:
+Example:
 {
   "referral": ["Cardiologist"],
   "diagnosis": null
 }
 
-IMPORTANT: Do not add any text outside the JSON. Return JSON only.
+IMPORTANT: Return only JSON.
 """
 
 SPECIALIST_PROMPT = """
@@ -61,33 +60,31 @@ You are a {role} specialist.
 Patient information:
 {input}
 
-Return **STRICT JSON ONLY**:
+Return STRICT JSON ONLY:
 - "diagnosis": short string
 - "recommendation": short next steps
-- "confidence": "Low", "Medium", or "High"
+- "confidence": Low, Medium, or High
 
-IMPORTANT: JSON only, no extra text.
+IMPORTANT: JSON only.
 """
 
 CONFLICT_PROMPT = """
 You are a Conflict Resolver.
 
-Input: specialist reports and GP triage.
+Input: GP triage + specialist reports
 
-Return **STRICT JSON ONLY**:
-- "conflict": null or short explanation
-- "priority": name of specialist to prioritize if conflict exists
+Return STRICT JSON ONLY:
+- "conflict": null or explanation
+- "priority": specialist to prioritize if conflict exists
 """
 
 MDT_PROMPT = """
 You are a Multidisciplinary Team synthesizer.
 
-Input: GP triage, specialist reports, conflict resolver output.
+Input: GP triage, specialist reports, conflict resolver output
 
-Return **STRICT JSON ONLY**:
-- "top_issues": list of up to 3 issues, each with "issue", "justification", "recommended_next_steps"
-
-IMPORTANT: JSON only, no extra text.
+Return STRICT JSON ONLY:
+- "top_issues": list of up to 3 issues with "issue", "justification", "recommended_next_steps"
 """
 
 # ---------------------------
@@ -106,23 +103,23 @@ class MedicalAgentOrchestrator:
         # General Physician
         gp_mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         gp_template = PromptTemplate(input_variables=["input"], template=GP_PROMPT)
-        agents["GeneralPhysician"] = LLMChain(llm=self.llm, prompt=gp_template, memory=gp_mem, verbose=True)
+        agents["GeneralPhysician"] = LLMChain(llm=self.llm, prompt=gp_template, memory=gp_mem)
 
         # Specialists
         for role in ["Cardiologist", "Psychologist", "Pulmonologist", "Neurologist"]:
             mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
             prompt = PromptTemplate(input_variables=["input", "role"], template=SPECIALIST_PROMPT)
-            agents[role] = LLMChain(llm=self.llm, prompt=prompt, memory=mem, verbose=True)
+            agents[role] = LLMChain(llm=self.llm, prompt=prompt, memory=mem)
 
         # Conflict Resolver
         conflict_mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         conflict_template = PromptTemplate(input_variables=["input"], template=CONFLICT_PROMPT)
-        agents["ConflictResolver"] = LLMChain(llm=self.llm, prompt=conflict_template, memory=conflict_mem, verbose=True)
+        agents["ConflictResolver"] = LLMChain(llm=self.llm, prompt=conflict_template, memory=conflict_mem)
 
         # MDT
         mdt_mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         mdt_template = PromptTemplate(input_variables=["input"], template=MDT_PROMPT)
-        agents["Multidisciplinary"] = LLMChain(llm=self.llm, prompt=mdt_template, memory=mdt_mem, verbose=True)
+        agents["Multidisciplinary"] = LLMChain(llm=self.llm, prompt=mdt_template, memory=mdt_mem)
 
         return agents
 
@@ -133,11 +130,11 @@ class MedicalAgentOrchestrator:
     def process_report(self, medical_report: str):
         self.run_id = uuid.uuid4().hex[:8]
         self.conversation_history = ""
-        self._log("Received new medical report")
+        self._log("Received medical report")
         self._log(medical_report)
 
-        # Step 1: General Physician
-        yield "### Step 1 — General Physician triage\n---\n"
+        # Step 1: GP triage
+        yield "### Step 1 — General Physician\n---\n"
         gp_chain = self.agents["GeneralPhysician"]
         try:
             gp_out = gp_chain.run({"input": medical_report})
@@ -148,7 +145,7 @@ class MedicalAgentOrchestrator:
         yield f"**GP output:**\n```\n{gp_out}\n```\n"
         gp_json = safe_json_parse(gp_out)
         if not gp_json:
-            yield "❌ Error: GP did not return valid JSON."
+            yield "❌ GP returned invalid JSON"
             return
 
         referrals = gp_json.get("referral", []) or []
@@ -160,7 +157,7 @@ class MedicalAgentOrchestrator:
             return
 
         # Step 2: Specialist consultations
-        yield f"\n### Step 2 — Specialist consultations: {referrals}\n---\n"
+        yield f"\n### Step 2 — Specialists: {referrals}\n---\n"
         specialist_reports = {}
         for spec in referrals:
             chain = self.agents[spec]
@@ -169,53 +166,54 @@ class MedicalAgentOrchestrator:
             except Exception as e:
                 spec_out = f"❌ {spec} failed: {e}"
             self._log(f"{spec} output: {spec_out}")
-            yield f"**Report {spec}:**\n```\n{spec_out}\n```\n"
+            yield f"**{spec} Report:**\n```\n{spec_out}\n```\n"
             specialist_reports[spec] = {"raw": spec_out, "parsed": safe_json_parse(spec_out)}
             time.sleep(0.5)
 
         # Step 3: Conflict Resolver
-        yield "\n### Step 3 — Conflict Resolution\n---\n"
-        conflict_input_text = json.dumps({"specialist_reports": specialist_reports, "gp_triage": gp_json})
+        yield "\n### Step 3 — Conflict Resolver\n---\n"
+        conflict_input = json.dumps({"specialist_reports": specialist_reports, "gp_triage": gp_json})
         try:
-            conflict_out = self.agents["ConflictResolver"].run({"input": conflict_input_text})
+            conflict_out = self.agents["ConflictResolver"].run({"input": conflict_input})
         except Exception as e:
             conflict_out = f"❌ ConflictResolver failed: {e}"
-        self._log("ConflictResolver output: " + conflict_out)
+        self._log("Conflict output: " + conflict_out)
         yield f"**Conflict Resolver:**\n```\n{conflict_out}\n```\n"
 
-        # Step 4: MDT synthesis
+        # Step 4: MDT
         yield "\n### Step 4 — MDT synthesis\n---\n"
-        mdt_input_text = json.dumps({"gp_triage": gp_json, "specialist_reports": specialist_reports, "conflict": conflict_out})
+        mdt_input = json.dumps({"gp_triage": gp_json, "specialist_reports": specialist_reports, "conflict": conflict_out})
         try:
-            mdt_out = self.agents["Multidisciplinary"].run({"input": mdt_input_text})
+            mdt_out = self.agents["Multidisciplinary"].run({"input": mdt_input})
         except Exception as e:
             mdt_out = f"❌ MDT failed: {e}"
         self._log("MDT output: " + mdt_out)
         yield f"**MDT Final Assessment:**\n```\n{mdt_out}\n```\n"
-        yield "\nAnalysis complete. Follow-up questions can be asked."
+
+        yield "\nAnalysis complete. You can ask follow-up questions."
 
     def process_followup(self, question: str) -> str:
-        input_text = f"Previous conversation:\n{self.conversation_history}\nFollow-up question:\n{question}"
+        input_text = f"Previous conversation:\n{self.conversation_history}\nFollow-up:\n{question}"
         try:
             out = self.agents["Multidisciplinary"].run({"input": input_text})
         except Exception as e:
             out = f"❌ MDT follow-up failed: {e}"
-        self._log("Follow-up -> MDT: " + question)
+        self._log("Follow-up question: " + question)
         self._log("MDT response: " + out)
         return out
 
 # ---------------------------
 # Streamlit UI
 # ---------------------------
-st.set_page_config(page_title="🩺 MedAgent Triage", layout="wide")
-st.title("🩺 MedAgent — Multi-Agent Medical Triage")
-st.markdown("Workflow: General Physician → Specialists → Conflict Resolver → MDT")
+st.set_page_config(page_title="🩺 MedAgent", layout="wide")
+st.title("🩺 MedAgent: Multi-Agent Medical Triage")
+st.markdown("Workflow: GP → Specialists → Conflict Resolver → MDT")
 
 with st.sidebar:
     st.header("Disclaimer")
     st.warning("Educational/demo only. Not for real medical use.")
 
-# Initialize Gemini 2.5 Flash
+# Initialize LLM
 try:
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
@@ -230,18 +228,14 @@ except Exception as e:
 if "orchestrator" not in st.session_state:
     st.session_state.orchestrator = MedicalAgentOrchestrator(llm)
 
-# Input
+# Medical report input
 st.header("1) Submit Medical Report")
-example = (
-    "**Patient:** John Doe, 40M\n"
-    "**Symptoms:** Chest pain, palpitations, shortness of breath.\n"
-    "**History:** ER visits, cardiac workups normal."
-)
-medical_report = st.text_area("Paste the medical report:", value=example, height=180)
+example_report = "**Patient:** John Doe, 40M\n**Symptoms:** Chest pain, palpitations\n**History:** ER visits normal."
+medical_report = st.text_area("Paste report:", value=example_report, height=180)
 
 if st.button("Analyze Report"):
     if not medical_report.strip():
-        st.warning("Enter a report first")
+        st.warning("Enter a medical report first")
     else:
         orchestrator = st.session_state.orchestrator
         gen = orchestrator.process_report(medical_report)
@@ -252,12 +246,10 @@ if st.button("Analyze Report"):
                 time.sleep(0.2)
         except StopIteration:
             pass
-        except Exception as e:
-            st.error(f"Error during workflow: {e}")
         st.session_state.last_history = orchestrator.conversation_history
         st.success("Analysis complete!")
 
-# Follow-up questions
+# Follow-up
 if "last_history" in st.session_state:
     st.header("2) Ask follow-up questions")
     follow = st.text_input("Ask MDT:")
