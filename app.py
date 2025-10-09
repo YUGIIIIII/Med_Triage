@@ -5,7 +5,7 @@ import json
 import uuid
 import re
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
@@ -117,9 +117,14 @@ class MedicalAgentOrchestrator:
         self._log("Received new medical report")
         self._log(medical_report)
 
+        # Step 1: General Physician
         yield "### Step 1 — General Physician triage\n---\n"
         gp_chain = self.agents["GeneralPhysician"]
-        gp_out = gp_chain.run(medical_report)
+        try:
+            gp_out = gp_chain.run(medical_report)
+        except Exception as e:
+            yield f"❌ GP failed: {e}"
+            return
         self._log("GP output: " + gp_out)
         yield f"**GP output:**\n```\n{gp_out}\n```\n"
         gp_json = safe_json_parse(gp_out)
@@ -135,35 +140,47 @@ class MedicalAgentOrchestrator:
             self._log("Case closed by GP")
             return
 
-        # Specialist consultations
+        # Step 2: Specialist consultations
         yield f"\n### Step 2 — Specialist consultations: {referrals}\n---\n"
         specialist_reports = {}
         for spec in referrals:
             chain = self.agents[spec]
-            spec_out = chain.run({"input": medical_report, "role": spec})
+            try:
+                spec_out = chain.run({"input": medical_report, "role": spec})
+            except Exception as e:
+                spec_out = f"❌ {spec} failed: {e}"
             self._log(f"{spec} output: {spec_out}")
             yield f"**Report {spec}:**\n```\n{spec_out}\n```\n"
             specialist_reports[spec] = {"raw": spec_out, "parsed": safe_json_parse(spec_out)}
             time.sleep(0.5)
 
-        # Conflict Resolver
+        # Step 3: Conflict Resolver
         yield "\n### Step 3 — Conflict Resolution\n---\n"
         conflict_input_text = json.dumps({"specialist_reports": specialist_reports, "gp_triage": gp_json})
-        conflict_out = self.agents["ConflictResolver"].run(conflict_input_text)
+        try:
+            conflict_out = self.agents["ConflictResolver"].run(conflict_input_text)
+        except Exception as e:
+            conflict_out = f"❌ ConflictResolver failed: {e}"
         self._log("ConflictResolver output: " + conflict_out)
         yield f"**Conflict Resolver:**\n```\n{conflict_out}\n```\n"
 
-        # MDT
+        # Step 4: MDT synthesis
         yield "\n### Step 4 — MDT synthesis\n---\n"
         mdt_input_text = json.dumps({"gp_triage": gp_json, "specialist_reports": specialist_reports, "conflict": conflict_out})
-        mdt_out = self.agents["Multidisciplinary"].run(mdt_input_text)
+        try:
+            mdt_out = self.agents["Multidisciplinary"].run(mdt_input_text)
+        except Exception as e:
+            mdt_out = f"❌ MDT failed: {e}"
         self._log("MDT output: " + mdt_out)
         yield f"**MDT Final Assessment:**\n```\n{mdt_out}\n```\n"
         yield "\nAnalysis complete. Follow-up questions can be asked."
 
     def process_followup(self, question: str) -> str:
         input_text = f"Previous conversation:\n{self.conversation_history}\nFollow-up question:\n{question}"
-        out = self.agents["Multidisciplinary"].run(input_text)
+        try:
+            out = self.agents["Multidisciplinary"].run(input_text)
+        except Exception as e:
+            out = f"❌ MDT follow-up failed: {e}"
         self._log("Follow-up -> MDT: " + question)
         self._log("MDT response: " + out)
         return out
@@ -173,7 +190,6 @@ class MedicalAgentOrchestrator:
 # ---------------------------
 st.set_page_config(page_title="🩺 MedAgent Triage", layout="wide")
 st.title("🩺 MedAgent — Multi-Agent Medical Triage")
-
 st.markdown("Workflow: General Physician → Specialists → Conflict Resolver → MDT")
 
 with st.sidebar:
@@ -209,10 +225,16 @@ if st.button("Analyze Report"):
         st.warning("Enter a report first")
     else:
         orchestrator = st.session_state.orchestrator
-        with st.spinner("Running multi-agent workflow..."):
-            for part in orchestrator.process_report(medical_report):
+        gen = orchestrator.process_report(medical_report)
+        try:
+            while True:
+                part = next(gen)
                 st.markdown(part)
                 time.sleep(0.2)
+        except StopIteration:
+            pass
+        except Exception as e:
+            st.error(f"Error during workflow: {e}")
         st.session_state.last_history = orchestrator.conversation_history
         st.success("Analysis complete!")
 
