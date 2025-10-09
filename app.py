@@ -1,249 +1,141 @@
 import streamlit as st
-import os
-import json
-import datetime
-import uuid
-import re
-import time
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
 from langchain.chains import ConversationChain
-from langchain.memory import ConversationBufferWindowMemory
-import chromadb
-from chromadb.utils import embedding_functions
+from langchain.memory import ConversationBufferMemory
+from langchain.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
 
+# -----------------------------------------------------------
+# 1️⃣ PAGE CONFIGURATION
+# -----------------------------------------------------------
+st.set_page_config(
+    page_title="MedTriage AI",
+    page_icon="🩺",
+    layout="wide",
+)
 
-# --- CORE ORCHESTRATOR LOGIC ---
+st.title("🩺 MedTriage – AI Medical Triage Assistant")
+st.markdown(
+    """
+    MedTriage helps analyze patient symptoms using multiple medical specialists powered by **Gemini 2.5 Flash**.
+    Enter the patient's symptoms to get detailed assessments from each specialist.
+    """
+)
 
+# -----------------------------------------------------------
+# 2️⃣ INITIALIZE LLM USING STREAMLIT SECRETS
+# -----------------------------------------------------------
+try:
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",  # ✅ Using Gemini 2.5 Flash
+        google_api_key=st.secrets["GOOGLE_API_KEY"],
+        temperature=0.5,
+    )
+except Exception as e:
+    st.error("❌ Could not initialize Gemini 2.5 Flash. Please check Streamlit secrets.")
+    st.stop()
+
+# -----------------------------------------------------------
+# 3️⃣ MEDICAL AGENT ORCHESTRATOR CLASS
+# -----------------------------------------------------------
 class MedicalAgentOrchestrator:
-    """Manages the workflow of memory-enabled medical agents."""
-
     def __init__(self, llm):
         self.llm = llm
-        self.main_conversation_history = ""
-        self.log_dir = "diagnosis_logs"
-        self.json_log_dir = "diagnosis_logs_json"
-        self.vector_db_path = "vector_db"
-        self._setup_logging()
-
-        try:
-            self.chroma_client = chromadb.PersistentClient(path=self.vector_db_path)
-            self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
-            self.collection = self.chroma_client.get_or_create_collection(
-                name="medical_diagnoses", embedding_function=self.embedding_function
-            )
-        except Exception:
-            self.chroma_client = None
-            self.collection = None
-
         self.agents = self._create_agents()
-        self.case_started = False
-        self.referred_specialists_for_retry = []
-
-    def _setup_logging(self):
-        os.makedirs(self.log_dir, exist_ok=True)
-        os.makedirs(self.json_log_dir, exist_ok=True)
-
-    def _create_prompt_template(self, role_prompt):
-        template = role_prompt.strip() + "\n\nCurrent Conversation:\n{history}\n\nHuman: {input}\nAI:"
-        return PromptTemplate(input_variables=["history", "input"], template=template)
 
     def _create_agents(self):
         agents = {}
-        prompts = {
-            "GeneralPhysician": """Act as an expert General Physician. Your first task is to triage a patient. You MUST return a JSON object with two keys: "referral" (a list of specialist names or an empty list) and "diagnosis" (a string with your findings, or null if referring). Example: {"referral": ["Cardiologist"], "diagnosis": null}. Your second task is to check specialist reports for conflicts. You MUST return a JSON object with one key: "conflict" (a string describing the conflict, or null if none). Example: {"conflict": "Cardiologist points to stress, Pulmonologist points to infection."}.""",
-            "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health.",
-            "Psychologist": "Act as an expert Psychologist. Analyze the conversation and medical history, providing a psychological assessment.",
-            "Pulmonologist": "Act as an expert Pulmonologist. Analyze the conversation and medical history, providing a pulmonary assessment.",
-            "Neurologist": "Act as an expert Neurologist. Analyze the conversation and medical history, providing a neurological assessment.",
-            "ConflictResolver": """Act as an expert conflict resolver. You are given specialist reports that are conflicting. Your task is to analyze them and provide a reasoned resolution. You MUST return a JSON object with a single key: "resolution". Example: {"resolution": "The symptoms align more with stress-induced tachycardia, so the Psychologist's assessment should be prioritized."}.""",
-            "MultidisciplinaryTeam": "Act as a multidisciplinary team. Review the entire conversation history. Synthesize this information to provide a final list of the 3 most likely health issues, each with a concise justification. When asked a follow-up question, use the full conversation context to provide an accurate answer."
+
+        agent_roles = {
+            "Cardiologist": "Analyzes cardiac-related symptoms such as chest pain, palpitations, or shortness of breath.",
+            "Psychologist": "Analyzes psychological symptoms including anxiety, depression, stress, or behavioral changes.",
+            "Pulmonologist": "Focuses on respiratory symptoms such as cough, wheezing, asthma, or lung disorders.",
+            "Neurologist": "Analyzes neurological symptoms like dizziness, headaches, numbness, or weakness.",
         }
-        for role, prompt_text in prompts.items():
-            prompt_template = self._create_prompt_template(prompt_text)
-            memory = ConversationBufferWindowMemory(k=15)
+
+        for role, desc in agent_roles.items():
+            memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+            prompt_template = PromptTemplate.from_template(
+                f"""
+                You are a {role}. {desc}
+                Respond in a clear, empathetic, and medically appropriate tone.
+
+                Patient information:
+                {{input}}
+
+                Provide:
+                1. A possible cause or diagnosis (based on symptoms)
+                2. Recommended next steps or tests
+                3. A confidence level (Low / Medium / High)
+                """
+            )
+
             agents[role] = ConversationChain(llm=self.llm, prompt=prompt_template, memory=memory)
+
         return agents
 
-    def safe_json_parse(self, json_string):
-        try:
-            if json_string is None:
-                return None
-            cleaned = str(json_string).strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            json_match = re.search(r'\{[\s\S]*\}', cleaned.strip())
-            return json.loads(json_match.group(0)) if json_match else None
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            return None
+    def diagnose(self, patient_input):
+        responses = {}
+        for role, agent in self.agents.items():
+            try:
+                response = agent.run(input=patient_input)
+                responses[role] = response
+            except Exception as e:
+                responses[role] = f"⚠️ Error: {e}"
+        return responses
 
-    def _save_conversation_log(self):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_filename = os.path.splitext(self.report_filename)[0]
-        log_filename = f"{self.log_dir}/{base_filename}_{timestamp}.txt"
-        try:
-            with open(log_filename, "w") as f:
-                f.write(self.main_conversation_history)
-            if self.collection is not None:
-                self.collection.upsert(documents=[self.main_conversation_history], ids=[str(self.run_id)])
-            return f"✅ Diagnosis log saved to: `{log_filename}`"
-        except Exception as e:
-            return f"❌ Error saving log file: {e}"
-
-    def _get_similar_cases(self, query):
-        if self.collection is None:
-            return []
-        try:
-            results = self.collection.query(query_texts=[query], n_results=3)
-            return results["documents"][0] if results.get("documents") else []
-        except Exception:
-            return []
-
-    def process_report(self, medical_report, report_filename="uploaded_report.txt"):
-        self.case_started = True
-        self.report_filename = report_filename
-        self.run_id = uuid.uuid4()
-        self.main_conversation_history = ""
-
-        yield "### Step 0: Retrieving Similar Cases\n---\n"
-        similar_cases = self._get_similar_cases(medical_report)
-        if similar_cases:
-            self.main_conversation_history += "\n--- Similar Past Cases ---\n" + "\n\n".join(similar_cases) + "\n\n"
-            yield f"Found {len(similar_cases)} similar past cases.\n"
-        else:
-            yield "No similar past cases found.\n"
-
-        yield "\n### Step 1: General Physician Triage\n---\n"
-        self.main_conversation_history += f"Initial Medical Report:\n\n{medical_report}\n"
-
-        gp_chain = self.agents["GeneralPhysician"]
-        gp_response_str = gp_chain.predict(input=self.main_conversation_history)
-        time.sleep(1)
-        self.main_conversation_history += f"\n--- General Physician Triage Notes ---\n{gp_response_str}\n"
-        yield f"**GP Triage Output:**\n```json\n{gp_response_str}\n```\n"
-
-        gp_decision = self.safe_json_parse(gp_response_str)
-        if gp_decision is None:
-            yield "❌ Error: GP response was not valid JSON. Cannot proceed."
-            return
-
-        if gp_decision.get("referral"):
-            yield f"\n### Step 2: Specialist Consultations for `{gp_decision['referral']}`\n---\n"
-            for update in self._run_specialist_flow(gp_decision["referral"]):
-                yield update
-        else:
-            yield "\n### Final Diagnosis from General Physician\n---\n"
-            yield f"**{gp_decision.get('diagnosis', 'No diagnosis provided.')}**\n"
-
-        yield f"\n---\n{self._save_conversation_log()}\n\n"
-        yield "**Analysis complete. You can now ask follow-up questions.**"
-
-    def _run_specialist_flow(self, referred_specialists):
-        for i, specialist_name in enumerate(referred_specialists):
-            yield f"\n*Consulting {specialist_name} ({i + 1}/{len(referred_specialists)})...*\n"
-            if specialist_name in self.agents:
-                specialist_response = self.agents[specialist_name].predict(input=self.main_conversation_history)
-                time.sleep(1)
-                self.main_conversation_history += f"\n--- {specialist_name} Report ---\n{specialist_response}\n"
-                yield f"**Report from {specialist_name}:**\n\n{specialist_response}\n"
-
-        yield "\n### Step 3: GP Consistency Check\n---\n"
-        gp_consistency_response_str = self.agents["GeneralPhysician"].predict(input=self.main_conversation_history)
-        time.sleep(1)
-        self.main_conversation_history += f"\n--- GP Consistency Check ---\n{gp_consistency_response_str}\n"
-        yield f"**GP Consistency Check Output:**\n```json\n{gp_consistency_response_str}\n```\n"
-
-        gp_consistency_decision = self.safe_json_parse(gp_consistency_response_str)
-        if gp_consistency_decision and gp_consistency_decision.get("conflict"):
-            yield f"\n### Step 4: Conflict Resolution\n---\n"
-            resolution_response_str = self.agents["ConflictResolver"].predict(input=self.main_conversation_history)
-            time.sleep(1)
-            self.main_conversation_history += f"\n--- Conflict Resolution ---\n{resolution_response_str}\n"
-            yield f"**Conflict Resolution Output:**\n{resolution_response_str}\n"
-
-        yield "\n### Step 5: Final Multidisciplinary Team Assessment\n---\n"
-        mdt_response = self.agents["MultidisciplinaryTeam"].predict(input=self.main_conversation_history)
-        time.sleep(1)
-        self.main_conversation_history += f"\n--- Final MDT Assessment ---\n{mdt_response}\n"
-        yield f"**Final Assessment:**\n\n{mdt_response}\n"
-
-    def process_follow_up(self, question):
-        if not self.case_started:
-            return "Please start with an initial report."
-        self.main_conversation_history += f"\n--- Follow-up Question ---\nHuman: {question}\n"
-        response = self.agents["MultidisciplinaryTeam"].predict(input=self.main_conversation_history)
-        time.sleep(1)
-        self.main_conversation_history += f"AI: {response}\n"
-        st.info(self._save_conversation_log())
-        return response
-
-
-# --- STREAMLIT UI ---
-
-st.set_page_config(page_title="🩺 MedAgent Collaborative Diagnosis", layout="wide")
-st.title("🩺 MedAgent: A Collaborative AI Diagnostic System")
-st.markdown("This application uses a multi-agent AI system to analyze medical reports.")
-
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    st.info("Using internal API connection (from Streamlit secrets).")
-    st.markdown("---")
-    st.header("⚠️ Disclaimer")
-    st.warning("This software is for educational purposes only and not a substitute for professional medical advice.")
-
-
+# -----------------------------------------------------------
+# 4️⃣ INITIALIZE SESSION STATE
+# -----------------------------------------------------------
 if "orchestrator" not in st.session_state:
-    st.session_state.orchestrator = None
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "analysis_complete" not in st.session_state:
-    st.session_state.analysis_complete = False
-
-
-# Initialize orchestrator using Streamlit secrets
-if st.session_state.orchestrator is None:
-    with st.spinner("Initializing agents..."):
-        api_key = st.secrets["GOOGLE_API_KEY"]
-        genai.configure(api_key=api_key)
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.2)
+    with st.spinner("Initializing specialist agents..."):
         st.session_state.orchestrator = MedicalAgentOrchestrator(llm=llm)
 
+# -----------------------------------------------------------
+# 5️⃣ SIDEBAR CONFIGURATION
+# -----------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    st.info("Gemini 2.5 Flash is connected automatically using Streamlit Secrets.")
+    st.markdown("---")
+    st.header("⚠️ Disclaimer")
+    st.warning(
+        "This tool is for **educational and informational purposes only**. "
+        "It should not replace professional medical advice or diagnosis."
+    )
 
-if st.session_state.orchestrator:
-    st.header("1. Submit Medical Report")
-    example_report = """**Patient:** Michael Johnson, 35-year-old male, Software Engineer. **Symptoms:** Recurrent episodes of intense fear, heart palpitations, shortness of breath, chest tightness, dizziness, and trembling. **History:** Two ER visits in the past six months; all cardiac workups were negative. Patient is worried he is having a heart attack."""
-    medical_report = st.text_area("Paste the medical report below:", height=200, value=example_report)
+# -----------------------------------------------------------
+# 6️⃣ MAIN USER INPUT
+# -----------------------------------------------------------
+st.markdown("### 🧾 Enter Patient Symptoms")
+patient_input = st.text_area(
+    "Describe the patient's symptoms, duration, and relevant history:",
+    placeholder=(
+        "Example: 35-year-old female experiencing chest tightness, shortness of breath, "
+        "and mild anxiety for the past 2 days."
+    ),
+    height=150,
+)
 
-    if st.button("Analyze Report", type="primary"):
-        if medical_report.strip():
-            st.session_state.messages = [{"role": "user", "content": medical_report}]
-            st.session_state.analysis_complete = False
-            with st.status("Running full diagnostic workflow...", expanded=True) as status:
-                full_response_content = "".join(st.session_state.orchestrator.process_report(medical_report))
-                st.session_state.messages.append({"role": "assistant", "content": full_response_content})
-                status.update(label="Analysis Complete!", state="complete")
-            st.session_state.analysis_complete = True
-            st.rerun()
+# -----------------------------------------------------------
+# 7️⃣ RUN DIAGNOSIS
+# -----------------------------------------------------------
+if st.button("🧩 Analyze Symptoms"):
+    if not patient_input.strip():
+        st.warning("Please enter patient symptoms before proceeding.")
+    else:
+        orchestrator = st.session_state.orchestrator
+        with st.spinner("Analyzing symptoms with specialist agents..."):
+            results = orchestrator.diagnose(patient_input)
 
-    if st.session_state.messages:
-        st.header("Diagnostic Process Log")
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+        st.success("✅ Analysis complete! See the results below:")
 
-    if st.session_state.analysis_complete:
-        st.header("2. Ask Follow-up Questions")
-        if prompt := st.chat_input("Ask a follow-up question..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            with st.chat_message("assistant"):
-                with st.spinner("MDT is thinking..."):
-                    response = st.session_state.orchestrator.process_follow_up(prompt)
-                    st.markdown(response)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-else:
-    st.warning("Please configure your internal API key in Streamlit secrets.")
+        for specialist, result in results.items():
+            with st.expander(f"🔹 {specialist}"):
+                st.write(result)
+
+# -----------------------------------------------------------
+# 8️⃣ FOOTER
+# -----------------------------------------------------------
+st.markdown("---")
+st.caption("© 2025 MedTriage AI | Powered by Gemini 2.5 Flash")
