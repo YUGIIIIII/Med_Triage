@@ -40,7 +40,7 @@ You are a General Physician triage agent.
 
 Task 1 (TRIAGE):
 Read the patient information and decide whether the case can be handled as a general primary-care issue or requires referral to one or more specialists.
-Return a JSON object with:
+Return **strict JSON ONLY** with:
 - "referral": list of specialists ("Cardiologist", "Psychologist", "Pulmonologist", "Neurologist") OR []
 - "diagnosis": concise diagnosis string if general issue, else null
 """
@@ -50,7 +50,7 @@ You are a {role} specialist.
 Patient information:
 {input}
 
-Return JSON ONLY:
+Return **strict JSON ONLY**:
 - "diagnosis": short string
 - "recommendation": short next steps
 - "confidence": "Low", "Medium", "High"
@@ -59,7 +59,7 @@ Return JSON ONLY:
 CONFLICT_PROMPT = """
 You are a Conflict Resolver.
 Input: specialist reports and GP triage.
-Return JSON ONLY:
+Return **strict JSON ONLY**:
 - "conflict": null or short explanation
 - "priority": name of specialist to prioritize if conflict exists
 """
@@ -67,7 +67,7 @@ Return JSON ONLY:
 MDT_PROMPT = """
 You are a Multidisciplinary Team synthesizer.
 Input: GP triage, specialist reports, conflict resolver output.
-Return JSON ONLY:
+Return **strict JSON ONLY**:
 - "top_issues": list of up to 3 issues, each with "issue", "justification", "recommended_next_steps"
 """
 
@@ -87,23 +87,23 @@ class MedicalAgentOrchestrator:
         # General Physician
         gp_mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         gp_template = PromptTemplate(input_variables=["input"], template=GP_PROMPT)
-        agents["GeneralPhysician"] = LLMChain(llm=self.llm, prompt=gp_template, memory=gp_mem, verbose=False)
+        agents["GeneralPhysician"] = LLMChain(llm=self.llm, prompt=gp_template, memory=gp_mem, verbose=True)
 
         # Specialists
         for role in ["Cardiologist", "Psychologist", "Pulmonologist", "Neurologist"]:
             mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
             prompt = PromptTemplate(input_variables=["input", "role"], template=SPECIALIST_PROMPT)
-            agents[role] = LLMChain(llm=self.llm, prompt=prompt, memory=mem, verbose=False)
+            agents[role] = LLMChain(llm=self.llm, prompt=prompt, memory=mem, verbose=True)
 
         # Conflict Resolver
         conflict_mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         conflict_template = PromptTemplate(input_variables=["input"], template=CONFLICT_PROMPT)
-        agents["ConflictResolver"] = LLMChain(llm=self.llm, prompt=conflict_template, memory=conflict_mem, verbose=False)
+        agents["ConflictResolver"] = LLMChain(llm=self.llm, prompt=conflict_template, memory=conflict_mem, verbose=True)
 
         # MDT
         mdt_mem = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         mdt_template = PromptTemplate(input_variables=["input"], template=MDT_PROMPT)
-        agents["Multidisciplinary"] = LLMChain(llm=self.llm, prompt=mdt_template, memory=mdt_mem, verbose=False)
+        agents["Multidisciplinary"] = LLMChain(llm=self.llm, prompt=mdt_template, memory=mdt_mem, verbose=True)
 
         return agents
 
@@ -121,7 +121,7 @@ class MedicalAgentOrchestrator:
         yield "### Step 1 — General Physician triage\n---\n"
         gp_chain = self.agents["GeneralPhysician"]
         try:
-            gp_out = gp_chain.run(medical_report)
+            gp_out = gp_chain.run({"input": medical_report})
         except Exception as e:
             yield f"❌ GP failed: {e}"
             return
@@ -158,7 +158,7 @@ class MedicalAgentOrchestrator:
         yield "\n### Step 3 — Conflict Resolution\n---\n"
         conflict_input_text = json.dumps({"specialist_reports": specialist_reports, "gp_triage": gp_json})
         try:
-            conflict_out = self.agents["ConflictResolver"].run(conflict_input_text)
+            conflict_out = self.agents["ConflictResolver"].run({"input": conflict_input_text})
         except Exception as e:
             conflict_out = f"❌ ConflictResolver failed: {e}"
         self._log("ConflictResolver output: " + conflict_out)
@@ -168,7 +168,7 @@ class MedicalAgentOrchestrator:
         yield "\n### Step 4 — MDT synthesis\n---\n"
         mdt_input_text = json.dumps({"gp_triage": gp_json, "specialist_reports": specialist_reports, "conflict": conflict_out})
         try:
-            mdt_out = self.agents["Multidisciplinary"].run(mdt_input_text)
+            mdt_out = self.agents["Multidisciplinary"].run({"input": mdt_input_text})
         except Exception as e:
             mdt_out = f"❌ MDT failed: {e}"
         self._log("MDT output: " + mdt_out)
@@ -178,7 +178,7 @@ class MedicalAgentOrchestrator:
     def process_followup(self, question: str) -> str:
         input_text = f"Previous conversation:\n{self.conversation_history}\nFollow-up question:\n{question}"
         try:
-            out = self.agents["Multidisciplinary"].run(input_text)
+            out = self.agents["Multidisciplinary"].run({"input": input_text})
         except Exception as e:
             out = f"❌ MDT follow-up failed: {e}"
         self._log("Follow-up -> MDT: " + question)
@@ -196,7 +196,7 @@ with st.sidebar:
     st.header("Disclaimer")
     st.warning("Educational/demo only. Not for real medical use.")
 
-# LLM init
+# Initialize Gemini 2.5 Flash
 try:
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
