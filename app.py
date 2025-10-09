@@ -94,7 +94,8 @@ class MedicalAgentOrchestrator:
     def _create_agents(self):
         agents = {}
         prompts = {
-            "GeneralPhysician": """Act as an expert General Physician. Your first task is to triage a patient. You can refer to one or more of these specialists: Cardiologist, Psychologist, Pulmonologist, Neurologist. You MUST return a JSON object with two keys: "referral" (a list of specialist names from the available specialists, or an empty list) and "diagnosis" (a string with your findings, or null if referring). Example: {{"referral": ["Cardiologist", "Psychologist"], "diagnosis": null}}. Your second task is to check specialist reports for conflicts. You MUST return a JSON object with one key: "conflict" (a string describing the conflict, or null if none). Example: {{"conflict": "Cardiologist points to stress, Pulmonologist points to infection."}}.""",
+            "GeneralPhysician_Triage": """Act as an expert General Physician performing initial triage. You can refer to one or more of these specialists: Cardiologist, Psychologist, Pulmonologist, Neurologist. Analyze the patient's symptoms and medical history. You MUST return ONLY a JSON object with two keys: "referral" (a list of specialist names from the available specialists, or an empty list if you can diagnose directly) and "diagnosis" (a string with your findings if not referring, or null if referring to specialists). Example: {{"referral": ["Cardiologist", "Psychologist"], "diagnosis": null}}. Return ONLY the JSON object, nothing else.""",
+            "GeneralPhysician_Check": """Act as an expert General Physician reviewing specialist reports for consistency. Analyze all specialist reports provided in the conversation. You MUST return ONLY a JSON object with one key: "conflict" (a string describing any conflict between specialist reports, or null if reports are consistent). Example: {{"conflict": "Cardiologist suggests cardiac issue while Psychologist indicates anxiety disorder"}} or {{"conflict": null}}. Return ONLY the JSON object, nothing else.""",
             "Cardiologist": "Act as an expert Cardiologist. Analyze the conversation and medical history, providing a focused analysis on cardiovascular health. Consider symptoms like chest pain, palpitations, shortness of breath, and other cardiac-related concerns.",
             "Psychologist": "Act as an expert Psychologist. Analyze the conversation and medical history, providing a psychological assessment. Consider mental health conditions like anxiety, depression, panic disorders, and stress-related symptoms.",
             "Pulmonologist": "Act as an expert Pulmonologist. Analyze the conversation and medical history, providing a pulmonary assessment. Consider respiratory symptoms like shortness of breath, coughing, wheezing, and other lung-related concerns.",
@@ -106,6 +107,10 @@ class MedicalAgentOrchestrator:
             prompt_template = self._create_prompt_template(prompt_text)
             memory = ConversationBufferWindowMemory(k=15)
             agents[role] = ConversationChain(llm=self.llm, prompt=prompt_template, memory=memory)
+        
+        # Create separate instances for GP's two roles
+        agents["GeneralPhysician"] = agents["GeneralPhysician_Triage"]
+        
         return agents
 
     def safe_json_parse(self, json_string):
@@ -189,7 +194,7 @@ class MedicalAgentOrchestrator:
                 self.main_conversation_history += f"\n--- {specialist_name} Report ---\n{specialist_response}\n"
                 yield f"*Report from {specialist_name}:*\n\n{specialist_response}\n"
         yield "\n### Step 3: GP Consistency Check\n---\n"
-        gp_consistency_response_str = self.agents["GeneralPhysician"].predict(input=self.main_conversation_history)
+        gp_consistency_response_str = self.agents["GeneralPhysician_Check"].predict(input=self.main_conversation_history)
         time.sleep(1)
         self.main_conversation_history += f"\n--- GP Consistency Check ---\n{gp_consistency_response_str}\n"
         yield f"*GP Consistency Check Output:*\n```json\n{gp_consistency_response_str}\n```\n\n"
