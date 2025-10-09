@@ -1,12 +1,10 @@
 # app.py
 import streamlit as st
-import os
 import json
 import uuid
 import re
 import time
 from typing import Dict, Any, Optional
-
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
@@ -35,40 +33,61 @@ def safe_json_parse(text: Optional[str]) -> Optional[Dict[str, Any]]:
 # ---------------------------
 # Prompt templates
 # ---------------------------
+
 GP_PROMPT = """
 You are a General Physician triage agent.
 
+Patient information:
+{input}
+
 Task 1 (TRIAGE):
 Read the patient information and decide whether the case can be handled as a general primary-care issue or requires referral to one or more specialists.
-Return **strict JSON ONLY** with:
+Return **STRICT JSON ONLY** with:
 - "referral": list of specialists ("Cardiologist", "Psychologist", "Pulmonologist", "Neurologist") OR []
 - "diagnosis": concise diagnosis string if general issue, else null
+
+Example output:
+{
+  "referral": ["Cardiologist"],
+  "diagnosis": null
+}
+
+IMPORTANT: Do not add any text outside the JSON. Return JSON only.
 """
 
 SPECIALIST_PROMPT = """
 You are a {role} specialist.
+
 Patient information:
 {input}
 
-Return **strict JSON ONLY**:
+Return **STRICT JSON ONLY**:
 - "diagnosis": short string
 - "recommendation": short next steps
-- "confidence": "Low", "Medium", "High"
+- "confidence": "Low", "Medium", or "High"
+
+IMPORTANT: JSON only, no extra text.
 """
 
 CONFLICT_PROMPT = """
 You are a Conflict Resolver.
+
 Input: specialist reports and GP triage.
-Return **strict JSON ONLY**:
+
+Return **STRICT JSON ONLY**:
 - "conflict": null or short explanation
 - "priority": name of specialist to prioritize if conflict exists
 """
 
 MDT_PROMPT = """
 You are a Multidisciplinary Team synthesizer.
+
 Input: GP triage, specialist reports, conflict resolver output.
-Return **strict JSON ONLY**:
+
+Return **STRICT JSON ONLY**:
 - "top_issues": list of up to 3 issues, each with "issue", "justification", "recommended_next_steps"
+
+IMPORTANT: JSON only, no extra text.
 """
 
 # ---------------------------
