@@ -1,5 +1,5 @@
 import streamlit as st
-from langchain.chains import ConversationChain
+from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -26,7 +26,7 @@ st.markdown(
 # -----------------------------------------------------------
 try:
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",  # ✅ Using Gemini 2.5 Flash
+        model="gemini-2.5-flash",
         google_api_key=st.secrets["GOOGLE_API_KEY"],
         temperature=0.5,
     )
@@ -70,7 +70,12 @@ class MedicalAgentOrchestrator:
                 """
             )
 
-            agents[role] = ConversationChain(llm=self.llm, prompt=prompt_template, memory=memory)
+            agents[role] = LLMChain(
+                llm=self.llm,
+                prompt=prompt_template,
+                memory=memory,
+                verbose=False,
+            )
 
         return agents
 
